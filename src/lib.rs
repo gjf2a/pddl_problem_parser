@@ -2,6 +2,10 @@ use std::collections::{BTreeSet, BTreeMap};
 use std::io;
 use std::io::{Error, ErrorKind};
 
+pub fn errorize<T>(msg: String) -> io::Result<T> {
+    Err(Error::new(ErrorKind::Other, msg.as_str()))
+}
+
 struct Tokenizer {
     pending: String,
     symbols: BTreeSet<char>
@@ -96,10 +100,6 @@ pub struct PddlParser {
     tokens: Vec<String>,
     i: usize,
     problem: PddlProblem
-}
-
-pub fn errorize<T>(msg: String) -> io::Result<T> {
-    Err(Error::new(ErrorKind::Other, msg.as_str()))
 }
 
 impl PddlParser {
