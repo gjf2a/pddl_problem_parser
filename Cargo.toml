@@ -1,6 +1,6 @@
 [package]
 name = "pddl_problem_parser"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["gjf2a <ferrer@hendrix.edu>"]
 edition = "2018"
 
