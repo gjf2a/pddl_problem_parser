@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 fixed = "1.0.0"
+sexpr_parser = {git = "https://github.com/gjf2a/sexpr_parser"}

@@ -1,49 +1,7 @@
 use std::collections::{BTreeSet, BTreeMap};
 use std::io;
-use std::io::{Error, ErrorKind};
 use fixed::types::I40F24;
-
-pub fn errorize<T>(msg: String) -> io::Result<T> {
-    Err(Error::new(ErrorKind::Other, msg.as_str()))
-}
-
-struct Tokenizer {
-    pending: String,
-    symbols: BTreeSet<char>
-}
-
-impl Tokenizer {
-    pub fn new(symbols: &str) -> Self {
-        let mut result = Tokenizer {pending: String::new(), symbols: BTreeSet::new()};
-        symbols.chars().for_each(|c| {result.symbols.insert(c);});
-        result
-    }
-
-    pub fn tokenize(&mut self, text: &str) -> Vec<String> {
-        let mut tokens = Vec::new();
-        text.chars().for_each(|c| {
-            if self.symbols.contains(&c) {
-                self.add_pending(&mut tokens);
-                let mut cstr = String::new();
-                cstr.push(c);
-                tokens.push(cstr);
-            } else if c.is_whitespace() {
-                self.add_pending(&mut tokens);
-            } else {
-                self.pending.push(c);
-            }
-        });
-        self.add_pending(&mut tokens);
-        tokens
-    }
-
-    fn add_pending(&mut self, tokens: &mut Vec<String>) {
-        if self.pending.len() > 0 {
-            tokens.push(self.pending.to_lowercase());
-            self.pending = String::new();
-        }
-    }
-}
+use sexpr_parser::{errorize, Parser};
 
 #[derive(Clone,Debug,Ord,PartialOrd, PartialEq,Eq)]
 pub struct Predicate {
@@ -98,69 +56,31 @@ impl PddlProblem {
 }
 
 pub struct PddlParser {
-    tokens: Vec<String>,
-    i: usize,
+    parser: Parser,
     problem: PddlProblem
 }
+
+pub const UNTYPED: &str = "untyped";
 
 impl PddlParser {
     pub fn parse(pddl: &str) -> io::Result<PddlProblem> {
         let mut parser = PddlParser {
-            tokens: Tokenizer::new("()").tokenize(pddl),
-            i: 0, problem: PddlProblem::new() };
+            parser: Parser::new(pddl), problem: PddlProblem::new() };
         parser.define()?;
         Ok(parser.problem)
     }
 
-    fn at_close(&self) -> io::Result<bool> {
-        Ok(self.token()? == ")")
-    }
-
     fn snag_predicate(&mut self) -> io::Result<Predicate> {
-        self.check("(")?;
-        let mut result = Predicate::new(self.snag()?);
-        while !self.at_close()? {
-            result.add_arg(self.snag()?);
+        let tokens = self.parser.snag_symbols()?;
+        let mut result = Predicate::new(tokens[0].clone());
+        for i in 1..tokens.len() {
+            result.add_arg(tokens[i].clone());
         }
-        self.check(")")?;
         Ok(result)
     }
 
-    fn snag(&mut self) -> io::Result<String> {
-        let token = self.token()?;
-        let result = String::from(token);
-        self.advance();
-        Ok(result)
-    }
-
-    fn token(&self) -> io::Result<&str> {
-        self.lookahead(0)
-    }
-
-    fn lookahead(&self, distance: usize) -> io::Result<&str> {
-        let index = self.i + distance;
-        match self.tokens.get(index) {
-            Some(s) => Ok(s.as_str()),
-            None => errorize(format!("Token index '{}'; {} tokens available", index, self.tokens.len()))
-        }
-    }
-
-    fn check(&mut self, target_token: &str) -> io::Result<()> {
-        let actual = self.token()?;
-        if actual == target_token {
-            self.advance();
-            Ok(())
-        } else {
-            errorize(format!("Token '{}' expected, token '{}' encountered at position {}", target_token, actual, self.i))
-        }
-    }
-
-    fn advance(&mut self) {
-        self.advance_by(1);
-    }
-
-    fn advance_by(&mut self, distance: usize) {
-        self.i += distance;
+    fn check(&mut self, s: &str) -> io::Result<()> {
+        self.parser.check(s)
     }
 
     fn define(&mut self) -> io::Result<()> {
@@ -179,7 +99,7 @@ impl PddlParser {
     fn problem(&mut self) -> io::Result<()> {
         self.check("(")?;
         self.check("problem")?;
-        self.problem.name = String::from(self.snag()?);
+        self.problem.name = String::from(self.parser.snag()?);
         self.check(")")?;
         Ok(())
     }
@@ -187,7 +107,7 @@ impl PddlParser {
     fn domain(&mut self) -> io::Result<()> {
         self.check("(")?;
         self.check(":domain")?;
-        self.problem.domain = String::from(self.snag()?);
+        self.problem.domain = String::from(self.parser.snag()?);
         self.check(")")?;
         Ok(())
     }
@@ -195,13 +115,13 @@ impl PddlParser {
     fn objects(&mut self) -> io::Result<()> {
         self.check("(")?;
         self.check(":objects")?;
-        while !self.at_close()? {
-            let object_name = self.snag()?;
-            let object_type = if self.token()? == "-" {
-                self.advance();
-                self.snag()?
+        while !self.parser.at_close()? {
+            let object_name = self.parser.snag()?;
+            let object_type = if self.parser.token()? == "-" {
+                self.parser.advance();
+                self.parser.snag()?
             } else {
-                String::from("untyped")
+                String::from(UNTYPED)
             };
             self.problem.obj2type.insert(object_name, object_type);
         }
@@ -212,16 +132,16 @@ impl PddlParser {
     fn init(&mut self) -> io::Result<()> {
         self.check("(")?;
         self.check(":init")?;
-        while !self.at_close()? {
-            if self.lookahead(1)? == "=" {
+        while !self.parser.at_close()? {
+            if self.parser.lookahead(1)? == "=" {
                 self.check("(")?;
                 self.check("=")?;
                 let key = self.snag_predicate()?;
-                let value = match self.token()?.parse::<I40F24>() {
+                let value = match self.parser.token()?.parse::<I40F24>() {
                     Ok(value) => value,
                     Err(e) => return errorize(format!("{:?}", e))
                 };
-                self.advance();
+                self.parser.advance();
                 self.check(")")?;
                 self.problem.i40f24_state.insert(key, value);
             } else {
@@ -236,13 +156,13 @@ impl PddlParser {
     fn goal(&mut self) -> io::Result<()> {
         self.check("(")?;
         self.check(":goal")?;
-        if self.token()? == "(" && self.lookahead(1)? == "and" {
-            self.advance_by(2);
-            while !self.at_close()? {
+        if self.parser.token()? == "(" && self.parser.lookahead(1)? == "and" {
+            self.parser.advance_by(2);
+            while !self.parser.at_close()? {
                 let pred = self.snag_predicate()?;
                 self.problem.goals.insert(pred);
             }
-            self.advance();
+            self.parser.advance();
         } else {
             let pred = self.snag_predicate()?;
             self.problem.goals.insert(pred);
@@ -252,10 +172,10 @@ impl PddlParser {
     }
 
     fn metric(&mut self) -> io::Result<()> {
-        if self.token()? == "(" {
-            self.advance();
+        if self.parser.token()? == "(" {
+            self.parser.advance();
             self.check(":metric")?;
-            let tag = self.snag()?;
+            let tag = self.parser.snag()?;
             let predicate = self.snag_predicate()?;
             self.problem.metric = Some(match tag.as_str() {
                 "minimize" => Metric::Minimize(predicate),
