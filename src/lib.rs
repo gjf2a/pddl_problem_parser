@@ -1,7 +1,10 @@
 use std::collections::{BTreeSet, BTreeMap};
 use std::io;
 use fixed::types::I40F24;
-use sexpr_parser::{errorize, Parser};
+use sexpr_parser::{errorize, Parser, SexprTree};
+use sexpr_parser::SexprTree::{Sym, Sub};
+use crate::Condition::{PosPred, NegPred, Ne, Lt, Gt, Le, Ge, Eq};
+use crate::Effect::{AddPred, DelPred, Increase, Decrease};
 
 #[derive(Clone,Debug,Ord,PartialOrd, PartialEq,Eq)]
 pub struct Predicate {
@@ -188,9 +191,306 @@ impl PddlParser {
     }
 }
 
+pub struct PddlDomainParser {
+    domain: PddlDomain
+}
+
+impl PddlDomainParser {
+    pub fn parse(pddl: &str) -> io::Result<PddlDomain> {
+        let mut parser = PddlDomainParser { domain: PddlDomain::new() };
+        parser.define(&Parser::build_parse_tree(pddl)?)?;
+        Ok(parser.domain)
+    }
+
+    fn define(&mut self, tree: &SexprTree) -> io::Result<()> {
+        match tree {
+            Sub(syms)=> {
+                check(&syms, 0, "define")?;
+                for i in 1..syms.len() {
+                    match syms[i].head() {
+                        None => {},
+                        Some(tag) => match tag.as_str() {
+                            ":requirements" => {},
+                            ":types" => {
+                                let mut listing = syms[i].flatten();
+                                listing.drain(1..).for_each(|t| self.domain.add_type(t));
+                            },
+                            ":predicates" => process_pred_list(":predicates", &syms[i], &mut self.domain.predicates)?,
+                            ":functions" => process_pred_list(":functions", &syms[i], &mut self.domain.functions)?,
+                            ":action" => self.process_action(&syms[i])?,
+                            _ => return errorize(format!("Unrecognized tag: \"{}\"", tag))
+                        }
+                    }
+                }
+            },
+            Sym(sym)=> {
+                return errorize(format!("\"{}\": No domain details defined.", sym))
+            }
+        }
+        Ok(())
+    }
+
+    fn process_action(&mut self, symbols: &SexprTree) -> io::Result<()> {
+        let name;
+        let mut params = Option::None;
+        let mut preconditions = Vec::new();
+        let mut effects = Vec::new();
+        match symbols {
+            Sym(_) => return errorize(format!("Not a proper :action specification")),
+            Sub(v) => {
+                check(&v, 0, ":action")?;
+                match v.get(1) {
+                    None => return errorize(format!("Action has no name")),
+                    Some(s) => match s.head() {
+                        None => return errorize(format!("Action has a null name")),
+                        Some(s) => name = s
+                    }
+                };
+                for i in (2..v.len()).step_by(2) {
+                    match &v[i] {
+                        Sub(_) => return errorize(format!("No tag: {:?}", v[i])),
+                        Sym(s) => match s.as_str() {
+                            ":parameters" => {
+                                match v.get(i+1) {
+                                    None => return errorize(format!("No parameters declared")),
+                                    Some(param_tree) =>
+                                        params = Some(ParamSpec::new(&param_tree.flatten())?)
+                                };
+                            },
+                            ":precondition" => compound_parse(&v, i+1, &mut preconditions, |t| Condition::from(t), "precondition")?,
+                            ":effect" => compound_parse(&v, i+1, &mut effects, |t| Effect::from(t), "effect")?,
+                            _ => return errorize(format!("Unrecognized tag: {}", s))
+                        }
+                    }
+                }
+            }
+        }
+        match params {
+            None => errorize(format!("No parameters supplied")),
+            Some(params) => {
+                let action = ActionSpec {name, params, preconditions, effects};
+                self.domain.actions.insert(action.name.clone(), action);
+                Ok(())
+            }
+        }
+    }
+}
+
+fn check(parsed: &Vec<SexprTree>, i: usize, target: &str) -> io::Result<()> {
+    match parsed.get(i).unwrap_or(&SexprTree::sym("")) {
+        Sub(_) => errorize(format!("Expected symbol \"{}\", received a list", target)),
+        Sym(parsed) => {
+            if parsed.as_str() == target {
+                Ok(())
+            } else {
+                errorize(format!("Symbol \"{}\" does not match expected symbol \"{}\"", parsed, target))
+            }
+        }
+    }
+}
+
+fn process_pred_list(tag: &str, symbols: &SexprTree, storage: &mut BTreeMap<String,PredicateSpec>) -> io::Result<()> {
+    match symbols {
+        Sym(_) => return errorize(format!("Nothing here")),
+        Sub(sym_list) => {
+            check(&sym_list, 0, tag)?;
+            for i in 1..sym_list.len() {
+                let pred_spec = PredicateSpec::from_symbols(&sym_list[i].flatten())?;
+                storage.insert(pred_spec.name.clone(), pred_spec);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn compound_parse<T,F:Fn(&SexprTree)->io::Result<T>>(v: &Vec<SexprTree>, i: usize, repository: &mut Vec<T>, parser: F, tag: &str) -> io::Result<()> {
+    match v.get(i) {
+        None => return errorize(format!("No {}s declared", tag)),
+        Some(precond_tree) =>
+            match precond_tree {
+                Sym(s) => return errorize(format!("{}: Not a {}", s, tag)),
+                Sub(v) => if let Some(s) = v.get(0) {
+                    if s.is("and") {
+                        for p in 1..v.len() {
+                            repository.push(parser(&v[p])?);
+                        }
+                    } else {
+                        repository.push(parser(precond_tree)?);
+                    }
+                } else {
+                    return errorize(format!("No {}s", tag));
+                }
+            }
+    }
+    Ok(())
+}
+
+fn decode_compound_subtree<T,F:Fn(&str,&SexprTree,Option<&SexprTree>,Option<&SexprTree>)->io::Result<T>>(tree: &SexprTree, parser: F) -> io::Result<T> {
+    match tree {
+        Sym(s) => errorize(format!("{}: Not a Condition", s)),
+        Sub(v) => match v.get(0) {
+            None => errorize(format!("No content to Condition")),
+            Some(st) => match st {
+                Sym(s) => parser(s.as_str(), tree, v.get(1), v.get(2)),
+                Sub(_) => errorize(format!("Condition starts with a list"))
+            }
+        }
+    }
+}
+
+#[derive(Clone,Debug)]
+pub struct PredicateSpec {
+    name: String,
+    params: ParamSpec
+}
+
+impl PredicateSpec {
+    pub fn from_symbols(symbols: &Vec<String>) -> io::Result<Self> {
+        Ok(PredicateSpec {
+            name: symbols[0].clone(), params: ParamSpec::new(&symbols[1..])?})
+    }
+
+    pub fn from_tree(tree: &SexprTree) -> io::Result<Self> {
+        PredicateSpec::from_symbols(&tree.flatten())
+    }
+}
+
+#[derive(Clone,Debug)]
+pub struct ParamSpec {
+    symbols: Vec<String>,
+    types: Vec<String>
+}
+
+impl ParamSpec {
+    pub fn new(params: &[String]) -> io::Result<Self> {
+        let mut result = ParamSpec {symbols: Vec::new(), types: Vec::new()};
+        let mut i = 0;
+        while i < params.len() {
+            let param = params[i].clone();
+            let mut had_type = false;
+            if let Some(next) = params.get(i+1) {
+                if next == "-" {
+                    match params.get(i+2) {
+                        None => return errorize(format!("Error parsing parameters: \"-\" not followed by a type")),
+                        Some(param_type) => {
+                            result.types.push(param_type.clone());
+                            i += 2;
+                            had_type = true;
+                        }
+                    }
+                }
+            }
+            result.symbols.push(param);
+            i += 1;
+            if !had_type {
+                result.types.push(String::from(UNTYPED));
+            }
+        }
+        Ok(result)
+    }
+}
+
+#[derive(Clone,Debug)]
+pub struct ActionSpec {
+    name: String,
+    params: ParamSpec,
+    preconditions: Vec<Condition>,
+    effects: Vec<Effect>
+}
+
+#[derive(Clone,Debug)]
+pub enum Condition {
+    PosPred(PredicateSpec),
+    NegPred(PredicateSpec),
+    Eq(PredicateSpec,PredicateSpec),
+    Ne(PredicateSpec,PredicateSpec),
+    Lt(PredicateSpec,PredicateSpec),
+    Gt(PredicateSpec,PredicateSpec),
+    Le(PredicateSpec,PredicateSpec),
+    Ge(PredicateSpec,PredicateSpec)
+}
+
+impl Condition {
+    pub fn from(tree: &SexprTree) -> io::Result<Self> {
+        decode_compound_subtree(tree, |s, v, a, b| Ok(match s {
+            "not" => Condition::from(a.unwrap())?.flip(),
+            "=" => Eq(PredicateSpec::from_tree(a.unwrap())?, PredicateSpec::from_tree(b.unwrap())?),
+            ">=" => Ge(PredicateSpec::from_tree(a.unwrap())?, PredicateSpec::from_tree(b.unwrap())?),
+            "<=" => Le(PredicateSpec::from_tree(a.unwrap())?, PredicateSpec::from_tree(b.unwrap())?),
+            "<" => Lt(PredicateSpec::from_tree(a.unwrap())?, PredicateSpec::from_tree(b.unwrap())?),
+            ">" => Gt(PredicateSpec::from_tree(a.unwrap())?, PredicateSpec::from_tree(b.unwrap())?),
+            _ => PosPred(PredicateSpec::from_symbols(&v.flatten())?)
+        }))
+    }
+
+    pub fn flip(&self) -> Self {
+        match self {
+            PosPred(s) => NegPred(s.clone()),
+            NegPred(s) => PosPred(s.clone()),
+            Eq(a,b) => Ne(a.clone(), b.clone()),
+            Ne(a,b) => Eq(a.clone(), b.clone()),
+            Lt(a,b) => Ge(a.clone(), b.clone()),
+            Gt(a,b) => Le(a.clone(), b.clone()),
+            Le(a,b) => Gt(a.clone(), b.clone()),
+            Ge(a,b) => Lt(a.clone(), b.clone())
+        }
+    }
+}
+
+#[derive(Clone,Debug)]
+pub enum Effect {
+    AddPred(PredicateSpec),
+    DelPred(PredicateSpec),
+    Increase(PredicateSpec,PredicateSpec),
+    Decrease(PredicateSpec,PredicateSpec)
+}
+
+impl Effect {
+    pub fn from(tree: &SexprTree) -> io::Result<Self> {
+        decode_compound_subtree(tree, |s, v, a, b| Ok(match s {
+            "not" => DelPred(PredicateSpec::from_tree(a.unwrap())?),
+            "increase" => Increase(PredicateSpec::from_tree(a.unwrap())?, PredicateSpec::from_tree(b.unwrap())?),
+            "decrease" => Decrease(PredicateSpec::from_tree(a.unwrap())?, PredicateSpec::from_tree(b.unwrap())?),
+            _ => AddPred(PredicateSpec::from_symbols(&v.flatten())?)
+        }))
+    }
+}
+
+#[derive(Clone,Debug)]
+pub struct PddlDomain {
+    name: String,
+    types: BTreeSet<String>,
+    predicates: BTreeMap<String,PredicateSpec>,
+    functions: BTreeMap<String,PredicateSpec>,
+    actions: BTreeMap<String,ActionSpec>
+}
+
+impl PddlDomain {
+    pub fn new() -> Self {
+        PddlDomain {name: String::new(), types: BTreeSet::new(), predicates: BTreeMap::new(),
+            functions: BTreeMap::new(), actions: BTreeMap::new()}
+    }
+
+    pub fn add_type(&mut self, t: String) {
+        self.types.insert(t);
+    }
+
+    pub fn add_predicate(&mut self, p: PredicateSpec) {
+        self.predicates.insert(p.name.clone(), p);
+    }
+
+    pub fn add_function(&mut self, f: PredicateSpec) {
+        self.functions.insert(f.name.clone(), f);
+    }
+
+    pub fn add_action(&mut self, a: ActionSpec) {
+        self.actions.insert(a.name.clone(), a);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::PddlParser;
+    use crate::{PddlParser, PddlDomainParser};
 
     #[test]
     fn blocks_1() {
@@ -309,5 +609,55 @@ mod tests {
 )";
         let parsed = PddlParser::parse(pddl).unwrap();
         assert_eq!(format!("{:?}", parsed), r#"PddlProblem { name: "strips-sat-x-1", domain: "satellite", obj2type: {"groundstation1": "direction", "groundstation2": "direction", "image1": "mode", "instrument0": "instrument", "phenomenon3": "direction", "phenomenon4": "direction", "phenomenon6": "direction", "satellite0": "satellite", "spectrograph2": "mode", "star0": "direction", "star5": "direction", "thermograph0": "mode"}, bool_state: {Predicate { elements: ["calibration_target", "instrument0", "groundstation2"] }, Predicate { elements: ["on_board", "instrument0", "satellite0"] }, Predicate { elements: ["pointing", "satellite0", "phenomenon6"] }, Predicate { elements: ["power_avail", "satellite0"] }, Predicate { elements: ["supports", "instrument0", "thermograph0"] }}, i40f24_state: {Predicate { elements: ["data", "phenomenon3", "image1"] }: 22, Predicate { elements: ["data", "phenomenon3", "spectrograph2"] }: 125, Predicate { elements: ["data", "phenomenon3", "thermograph0"] }: 136, Predicate { elements: ["data", "phenomenon4", "image1"] }: 120, Predicate { elements: ["data", "phenomenon4", "spectrograph2"] }: 196, Predicate { elements: ["data", "phenomenon4", "thermograph0"] }: 134, Predicate { elements: ["data", "phenomenon6", "image1"] }: 144, Predicate { elements: ["data", "phenomenon6", "spectrograph2"] }: 174, Predicate { elements: ["data", "phenomenon6", "thermograph0"] }: 219, Predicate { elements: ["data", "star5", "image1"] }: 203, Predicate { elements: ["data", "star5", "spectrograph2"] }: 68, Predicate { elements: ["data", "star5", "thermograph0"] }: 273, Predicate { elements: ["data-stored"] }: 0, Predicate { elements: ["data_capacity", "satellite0"] }: 1000, Predicate { elements: ["fuel", "satellite0"] }: 112, Predicate { elements: ["fuel-used"] }: 0, Predicate { elements: ["slew_time", "groundstation1", "groundstation2"] }: 68.04, Predicate { elements: ["slew_time", "groundstation1", "phenomenon3"] }: 89.48, Predicate { elements: ["slew_time", "groundstation1", "phenomenon4"] }: 31.79, Predicate { elements: ["slew_time", "groundstation1", "phenomenon6"] }: 17.63, Predicate { elements: ["slew_time", "groundstation1", "star0"] }: 18.17, Predicate { elements: ["slew_time", "groundstation1", "star5"] }: 8.59, Predicate { elements: ["slew_time", "groundstation2", "groundstation1"] }: 68.04, Predicate { elements: ["slew_time", "groundstation2", "phenomenon3"] }: 33.94, Predicate { elements: ["slew_time", "groundstation2", "phenomenon4"] }: 39.73, Predicate { elements: ["slew_time", "groundstation2", "phenomenon6"] }: 50.73, Predicate { elements: ["slew_time", "groundstation2", "star0"] }: 38.61, Predicate { elements: ["slew_time", "groundstation2", "star5"] }: 62.86, Predicate { elements: ["slew_time", "phenomenon3", "groundstation1"] }: 89.48, Predicate { elements: ["slew_time", "phenomenon3", "groundstation2"] }: 33.94, Predicate { elements: ["slew_time", "phenomenon3", "phenomenon4"] }: 25.72, Predicate { elements: ["slew_time", "phenomenon3", "phenomenon6"] }: 14.75, Predicate { elements: ["slew_time", "phenomenon3", "star0"] }: 14.29, Predicate { elements: ["slew_time", "phenomenon3", "star5"] }: 10.18, Predicate { elements: ["slew_time", "phenomenon4", "groundstation1"] }: 31.79, Predicate { elements: ["slew_time", "phenomenon4", "groundstation2"] }: 39.73, Predicate { elements: ["slew_time", "phenomenon4", "phenomenon3"] }: 25.72, Predicate { elements: ["slew_time", "phenomenon4", "phenomenon6"] }: 2.098, Predicate { elements: ["slew_time", "phenomenon4", "star0"] }: 35.01, Predicate { elements: ["slew_time", "phenomenon4", "star5"] }: 64.5, Predicate { elements: ["slew_time", "phenomenon6", "groundstation1"] }: 17.63, Predicate { elements: ["slew_time", "phenomenon6", "groundstation2"] }: 50.73, Predicate { elements: ["slew_time", "phenomenon6", "phenomenon3"] }: 14.75, Predicate { elements: ["slew_time", "phenomenon6", "phenomenon4"] }: 2.098, Predicate { elements: ["slew_time", "phenomenon6", "star0"] }: 77.07, Predicate { elements: ["slew_time", "phenomenon6", "star5"] }: 29.32, Predicate { elements: ["slew_time", "star0", "groundstation1"] }: 18.17, Predicate { elements: ["slew_time", "star0", "groundstation2"] }: 38.61, Predicate { elements: ["slew_time", "star0", "phenomenon3"] }: 14.29, Predicate { elements: ["slew_time", "star0", "phenomenon4"] }: 35.01, Predicate { elements: ["slew_time", "star0", "phenomenon6"] }: 77.07, Predicate { elements: ["slew_time", "star0", "star5"] }: 36.56, Predicate { elements: ["slew_time", "star5", "groundstation1"] }: 8.59, Predicate { elements: ["slew_time", "star5", "groundstation2"] }: 62.86, Predicate { elements: ["slew_time", "star5", "phenomenon3"] }: 10.18, Predicate { elements: ["slew_time", "star5", "phenomenon4"] }: 64.5, Predicate { elements: ["slew_time", "star5", "phenomenon6"] }: 29.32, Predicate { elements: ["slew_time", "star5", "star0"] }: 36.56}, goals: {Predicate { elements: ["have_image", "phenomenon4", "thermograph0"] }, Predicate { elements: ["have_image", "phenomenon6", "thermograph0"] }, Predicate { elements: ["have_image", "star5", "thermograph0"] }}, metric: Some(Minimize(Predicate { elements: ["fuel-used"] })) }"#);
+    }
+
+    #[test]
+    fn blocks_domain() {
+        let pddl = "(define (domain BLOCKS)
+  (:requirements :strips)
+  (:predicates (on ?x ?y)
+	       (ontable ?x)
+	       (clear ?x)
+	       (handempty)
+	       (holding ?x)
+	       )
+
+  (:action pick-up
+	     :parameters (?x)
+	     :precondition (and (clear ?x) (ontable ?x) (handempty))
+	     :effect
+	     (and (not (ontable ?x))
+		   (not (clear ?x))
+		   (not (handempty))
+		   (holding ?x)))
+
+  (:action put-down
+	     :parameters (?x)
+	     :precondition (holding ?x)
+	     :effect
+	     (and (not (holding ?x))
+		   (clear ?x)
+		   (handempty)
+		   (ontable ?x)))
+  (:action stack
+	     :parameters (?x ?y)
+	     :precondition (and (holding ?x) (clear ?y))
+	     :effect
+	     (and (not (holding ?x))
+		   (not (clear ?y))
+		   (clear ?x)
+		   (handempty)
+		   (on ?x ?y)))
+  (:action unstack
+	     :parameters (?x ?y)
+	     :precondition (and (on ?x ?y) (clear ?x) (handempty))
+	     :effect
+	     (and (holding ?x)
+		   (clear ?y)
+		   (not (clear ?x))
+		   (not (handempty))
+		   (not (on ?x ?y)))))";
+        let parsed = PddlDomainParser::parse(pddl);
+        println!("{:?}", parsed);
     }
 }
