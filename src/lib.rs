@@ -218,7 +218,11 @@ impl PddlDomainParser {
                             ":predicates" => process_pred_list(":predicates", &syms[i], &mut self.domain.predicates)?,
                             ":functions" => process_pred_list(":functions", &syms[i], &mut self.domain.functions)?,
                             ":action" => self.process_action(&syms[i])?,
-                            _ => return errorize(format!("Unrecognized tag: \"{}\"", tag))
+                            "domain" => match &syms[i] {
+                                Sym(s) => return errorize(format!("Incorrect domain naming: {}", s)),
+                                Sub(v) => self.domain.name = v[1].head().unwrap()
+                            },
+                            _ => return errorize(format!("Unrecognized tag: \"{}\"; i: {}", tag, i))
                         }
                     }
                 }
@@ -259,7 +263,7 @@ impl PddlDomainParser {
                             },
                             ":precondition" => compound_parse(&v, i+1, &mut preconditions, |t| Condition::from(t), "precondition")?,
                             ":effect" => compound_parse(&v, i+1, &mut effects, |t| Effect::from(t), "effect")?,
-                            _ => return errorize(format!("Unrecognized tag: {}", s))
+                            _ => return errorize(format!("Unrecognized tag: {}; i: {}", s, i))
                         }
                     }
                 }
@@ -658,6 +662,6 @@ mod tests {
 		   (not (handempty))
 		   (not (on ?x ?y)))))";
         let parsed = PddlDomainParser::parse(pddl);
-        println!("{:?}", parsed);
+        assert_eq!(format!("{:?}", parsed), r#"Ok(PddlDomain { name: "blocks", types: {}, predicates: {"clear": PredicateSpec { name: "clear", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }, "handempty": PredicateSpec { name: "handempty", params: ParamSpec { symbols: [], types: [] } }, "holding": PredicateSpec { name: "holding", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }, "on": PredicateSpec { name: "on", params: ParamSpec { symbols: ["?x", "?y"], types: ["untyped", "untyped"] } }, "ontable": PredicateSpec { name: "ontable", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }}, functions: {}, actions: {"pick-up": ActionSpec { name: "pick-up", params: ParamSpec { symbols: ["?x"], types: ["untyped"] }, preconditions: [PosPred(PredicateSpec { name: "clear", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }), PosPred(PredicateSpec { name: "ontable", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }), PosPred(PredicateSpec { name: "handempty", params: ParamSpec { symbols: [], types: [] } })], effects: [DelPred(PredicateSpec { name: "ontable", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }), DelPred(PredicateSpec { name: "clear", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }), DelPred(PredicateSpec { name: "handempty", params: ParamSpec { symbols: [], types: [] } }), AddPred(PredicateSpec { name: "holding", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } })] }, "put-down": ActionSpec { name: "put-down", params: ParamSpec { symbols: ["?x"], types: ["untyped"] }, preconditions: [PosPred(PredicateSpec { name: "holding", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } })], effects: [DelPred(PredicateSpec { name: "holding", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }), AddPred(PredicateSpec { name: "clear", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }), AddPred(PredicateSpec { name: "handempty", params: ParamSpec { symbols: [], types: [] } }), AddPred(PredicateSpec { name: "ontable", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } })] }, "stack": ActionSpec { name: "stack", params: ParamSpec { symbols: ["?x", "?y"], types: ["untyped", "untyped"] }, preconditions: [PosPred(PredicateSpec { name: "holding", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }), PosPred(PredicateSpec { name: "clear", params: ParamSpec { symbols: ["?y"], types: ["untyped"] } })], effects: [DelPred(PredicateSpec { name: "holding", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }), DelPred(PredicateSpec { name: "clear", params: ParamSpec { symbols: ["?y"], types: ["untyped"] } }), AddPred(PredicateSpec { name: "clear", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }), AddPred(PredicateSpec { name: "handempty", params: ParamSpec { symbols: [], types: [] } }), AddPred(PredicateSpec { name: "on", params: ParamSpec { symbols: ["?x", "?y"], types: ["untyped", "untyped"] } })] }, "unstack": ActionSpec { name: "unstack", params: ParamSpec { symbols: ["?x", "?y"], types: ["untyped", "untyped"] }, preconditions: [PosPred(PredicateSpec { name: "on", params: ParamSpec { symbols: ["?x", "?y"], types: ["untyped", "untyped"] } }), PosPred(PredicateSpec { name: "clear", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }), PosPred(PredicateSpec { name: "handempty", params: ParamSpec { symbols: [], types: [] } })], effects: [AddPred(PredicateSpec { name: "holding", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }), AddPred(PredicateSpec { name: "clear", params: ParamSpec { symbols: ["?y"], types: ["untyped"] } }), DelPred(PredicateSpec { name: "clear", params: ParamSpec { symbols: ["?x"], types: ["untyped"] } }), DelPred(PredicateSpec { name: "handempty", params: ParamSpec { symbols: [], types: [] } }), DelPred(PredicateSpec { name: "on", params: ParamSpec { symbols: ["?x", "?y"], types: ["untyped", "untyped"] } })] }} })"#);
     }
 }
