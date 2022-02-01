@@ -363,11 +363,20 @@ impl PredicateSpec {
     pub fn propagate_types(&mut self, symbols2types: &BTreeMap<String,String>) {
         self.params.propagate_types(symbols2types);
     }
+
+    pub fn make_python_symbol(&self) -> String {
+        let mut python_symbol = format!("state.{}", self.name);
+        for param in self.params.param_list.iter() {
+            python_symbol.push_str(format!("[{}]", param).as_str());
+        }
+        python_symbol
+    }
 }
 
 #[derive(Clone,Debug)]
 pub struct ParamSpec {
-    symbol2type: BTreeMap<String,String>
+    symbol2type: BTreeMap<String,String>,
+    param_list: Vec<String>
 }
 
 impl ParamSpec {
@@ -410,9 +419,18 @@ impl ParamSpec {
             }
         }
 
-        let mut result = ParamSpec {symbol2type: BTreeMap::new()};
+        let mut result = ParamSpec {symbol2type: BTreeMap::new(), param_list: symbols.clone()};
         result.resolve_duplicate_types(&symbols, &types);
         Ok(result)
+    }
+
+    pub fn python_param(&self) -> String {
+        let mut result = String::new();
+        for param in self.param_list.iter() {
+            result.push_str(", ");
+            result.push_str(param);
+        }
+        result
     }
 
     fn resolve_duplicate_types(&mut self, symbols: &Vec<String>, types: &Vec<String>) {
@@ -451,6 +469,35 @@ impl ActionSpec {
         for e in self.effects.iter_mut() {
             e.propagate_types(&self.params.symbol2type);
         }
+    }
+
+    pub fn make_python_function(&self) -> String {
+        format!("def {}(state{}):\n    if {}:\n{}        return state\n",
+                self.name, self.params.python_param(), self.make_python_preconditions(),
+                self.make_python_effects())
+    }
+
+    fn make_python_preconditions(&self) -> String {
+        if self.preconditions.is_empty() {
+            String::from("True")
+        } else {
+            let mut result = self.preconditions[0].make_python_expression();
+            for c in self.preconditions.iter().skip(1) {
+                result.push_str(" and ");
+                result.push_str(c.make_python_expression().as_str());
+            }
+            result
+        }
+    }
+
+    fn make_python_effects(&self) -> String {
+        let mut result = String::new();
+        for e in self.effects.iter() {
+            result.push_str("        ");
+            result.push_str(e.make_python_effect().as_str());
+            result.push('\n');
+        }
+        result
     }
 }
 
@@ -504,6 +551,19 @@ impl Condition {
             Ge(a,b) => Lt(a.clone(), b.clone())
         }
     }
+
+    pub fn make_python_expression(&self) -> String {
+        match self {
+            PosPred(s) => s.make_python_symbol(),
+            NegPred(s) => format!("not {}", s.make_python_symbol()),
+            Eq(s1, s2) => format!("{} == {}", s1.make_python_symbol(), s2.make_python_symbol()),
+            Ne(s1, s2) => format!("{} != {}", s1.make_python_symbol(), s2.make_python_symbol()),
+            Lt(s1, s2) => format!("{} < {}", s1.make_python_symbol(), s2.make_python_symbol()),
+            Gt(s1, s2) => format!("{} > {}", s1.make_python_symbol(), s2.make_python_symbol()),
+            Le(s1, s2) => format!("{} <= {}", s1.make_python_symbol(), s2.make_python_symbol()),
+            Ge(s1, s2) => format!("{} >= {}", s1.make_python_symbol(), s2.make_python_symbol())
+        }
+    }
 }
 
 #[derive(Clone,Debug)]
@@ -530,6 +590,15 @@ impl Effect {
             DelPred(s) => s.propagate_types(symbols2types),
             Increase(a,b) => {a.propagate_types(symbols2types); b.propagate_types(symbols2types);},
             Decrease(a,b) => {a.propagate_types(symbols2types); b.propagate_types(symbols2types);}
+        }
+    }
+
+    pub fn make_python_effect(&self) -> String {
+        match self {
+            AddPred(s) => format!("{} = True", s.make_python_symbol()),
+            DelPred(s) => format!("{} = False", s.make_python_symbol()),
+            Increase(s1, s2) => format!("{} += {}", s1.make_python_symbol(), s2.make_python_symbol()),
+            Decrease(s1, s2) => format!("{} -= {}", s1.make_python_symbol(), s2.make_python_symbol())
         }
     }
 }
@@ -563,6 +632,15 @@ impl PddlDomain {
 
     pub fn add_action(&mut self, a: ActionSpec) {
         self.actions.insert(a.name.clone(), a);
+    }
+
+    pub fn make_python_domain(&self) -> String {
+        let mut result = String::new();
+        for action in self.actions.values() {
+            result.push_str(action.make_python_function().as_str());
+            result.push('\n');
+        }
+        result.replace("?", "")
     }
 }
 /*
@@ -795,8 +873,9 @@ mod tests {
 		   (not (clear ?x))
 		   (not (handempty))
 		   (not (on ?x ?y)))))";
-        let parsed = PddlDomainParser::parse(pddl);
-        assert_eq!(format!("{:?}", parsed), r#"Ok(PddlDomain { name: "blocks", types: {}, predicates: {"clear": PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"} } }, "handempty": PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {} } }, "holding": PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"} } }, "on": PredicateSpec { name: "on", params: ParamSpec { symbol2type: {"?x": "untyped", "?y": "untyped"} } }, "ontable": PredicateSpec { name: "ontable", params: ParamSpec { symbol2type: {"?x": "untyped"} } }}, functions: {}, actions: {"pick-up": ActionSpec { name: "pick-up", params: ParamSpec { symbol2type: {"?x": "untyped"} }, preconditions: [PosPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"} } }), PosPred(PredicateSpec { name: "ontable", params: ParamSpec { symbol2type: {"?x": "untyped"} } }), PosPred(PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {} } })], effects: [DelPred(PredicateSpec { name: "ontable", params: ParamSpec { symbol2type: {"?x": "untyped"} } }), DelPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"} } }), DelPred(PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {} } }), AddPred(PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"} } })] }, "put-down": ActionSpec { name: "put-down", params: ParamSpec { symbol2type: {"?x": "untyped"} }, preconditions: [PosPred(PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"} } })], effects: [DelPred(PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"} } }), AddPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"} } }), AddPred(PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {} } }), AddPred(PredicateSpec { name: "ontable", params: ParamSpec { symbol2type: {"?x": "untyped"} } })] }, "stack": ActionSpec { name: "stack", params: ParamSpec { symbol2type: {"?x": "untyped", "?y": "untyped"} }, preconditions: [PosPred(PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"} } }), PosPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?y": "untyped"} } })], effects: [DelPred(PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"} } }), DelPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?y": "untyped"} } }), AddPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"} } }), AddPred(PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {} } }), AddPred(PredicateSpec { name: "on", params: ParamSpec { symbol2type: {"?x": "untyped", "?y": "untyped"} } })] }, "unstack": ActionSpec { name: "unstack", params: ParamSpec { symbol2type: {"?x": "untyped", "?y": "untyped"} }, preconditions: [PosPred(PredicateSpec { name: "on", params: ParamSpec { symbol2type: {"?x": "untyped", "?y": "untyped"} } }), PosPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"} } }), PosPred(PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {} } })], effects: [AddPred(PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"} } }), AddPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?y": "untyped"} } }), DelPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"} } }), DelPred(PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {} } }), DelPred(PredicateSpec { name: "on", params: ParamSpec { symbol2type: {"?x": "untyped", "?y": "untyped"} } })] }} })"#);
+        let parsed = PddlDomainParser::parse(pddl).unwrap();
+        assert_eq!(format!("{:?}", parsed), r#"PddlDomain { name: "blocks", types: {}, predicates: {"clear": PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }, "handempty": PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {}, param_list: [] } }, "holding": PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }, "on": PredicateSpec { name: "on", params: ParamSpec { symbol2type: {"?x": "untyped", "?y": "untyped"}, param_list: ["?x", "?y"] } }, "ontable": PredicateSpec { name: "ontable", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }}, functions: {}, actions: {"pick-up": ActionSpec { name: "pick-up", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] }, preconditions: [PosPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }), PosPred(PredicateSpec { name: "ontable", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }), PosPred(PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {}, param_list: [] } })], effects: [DelPred(PredicateSpec { name: "ontable", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }), DelPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }), DelPred(PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {}, param_list: [] } }), AddPred(PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } })] }, "put-down": ActionSpec { name: "put-down", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] }, preconditions: [PosPred(PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } })], effects: [DelPred(PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }), AddPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }), AddPred(PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {}, param_list: [] } }), AddPred(PredicateSpec { name: "ontable", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } })] }, "stack": ActionSpec { name: "stack", params: ParamSpec { symbol2type: {"?x": "untyped", "?y": "untyped"}, param_list: ["?x", "?y"] }, preconditions: [PosPred(PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }), PosPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?y": "untyped"}, param_list: ["?y"] } })], effects: [DelPred(PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }), DelPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?y": "untyped"}, param_list: ["?y"] } }), AddPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }), AddPred(PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {}, param_list: [] } }), AddPred(PredicateSpec { name: "on", params: ParamSpec { symbol2type: {"?x": "untyped", "?y": "untyped"}, param_list: ["?x", "?y"] } })] }, "unstack": ActionSpec { name: "unstack", params: ParamSpec { symbol2type: {"?x": "untyped", "?y": "untyped"}, param_list: ["?x", "?y"] }, preconditions: [PosPred(PredicateSpec { name: "on", params: ParamSpec { symbol2type: {"?x": "untyped", "?y": "untyped"}, param_list: ["?x", "?y"] } }), PosPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }), PosPred(PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {}, param_list: [] } })], effects: [AddPred(PredicateSpec { name: "holding", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }), AddPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?y": "untyped"}, param_list: ["?y"] } }), DelPred(PredicateSpec { name: "clear", params: ParamSpec { symbol2type: {"?x": "untyped"}, param_list: ["?x"] } }), DelPred(PredicateSpec { name: "handempty", params: ParamSpec { symbol2type: {}, param_list: [] } }), DelPred(PredicateSpec { name: "on", params: ParamSpec { symbol2type: {"?x": "untyped", "?y": "untyped"}, param_list: ["?x", "?y"] } })] }} }"#);
+        println!("{}", parsed.make_python_domain());
     }
 
     #[test]
@@ -890,7 +969,8 @@ mod tests {
 )
 
 ";
-        let parsed = PddlDomainParser::parse(pddl);
-        assert_eq!(format!("{:?}", parsed), r#"Ok(PddlDomain { name: "satellite", types: {"direction", "instrument", "mode", "satellite"}, predicates: {"calibrated": PredicateSpec { name: "calibrated", params: ParamSpec { symbol2type: {"?i": "instrument"} } }, "calibration_target": PredicateSpec { name: "calibration_target", params: ParamSpec { symbol2type: {"?d": "direction", "?i": "instrument"} } }, "have_image": PredicateSpec { name: "have_image", params: ParamSpec { symbol2type: {"?d": "direction", "?m": "mode"} } }, "on_board": PredicateSpec { name: "on_board", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"} } }, "pointing": PredicateSpec { name: "pointing", params: ParamSpec { symbol2type: {"?d": "direction", "?s": "satellite"} } }, "power_avail": PredicateSpec { name: "power_avail", params: ParamSpec { symbol2type: {"?s": "satellite"} } }, "power_on": PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"} } }, "supports": PredicateSpec { name: "supports", params: ParamSpec { symbol2type: {"?i": "instrument", "?m": "mode"} } }}, functions: {"data": PredicateSpec { name: "data", params: ParamSpec { symbol2type: {"?d": "direction", "?m": "mode"} } }, "data-stored": PredicateSpec { name: "data-stored", params: ParamSpec { symbol2type: {} } }, "data_capacity": PredicateSpec { name: "data_capacity", params: ParamSpec { symbol2type: {"?s": "satellite"} } }, "fuel": PredicateSpec { name: "fuel", params: ParamSpec { symbol2type: {"?s": "satellite"} } }, "fuel-used": PredicateSpec { name: "fuel-used", params: ParamSpec { symbol2type: {} } }, "slew_time": PredicateSpec { name: "slew_time", params: ParamSpec { symbol2type: {"?a": "direction", "?b": "direction"} } }}, actions: {"calibrate": ActionSpec { name: "calibrate", params: ParamSpec { symbol2type: {"?d": "direction", "?i": "instrument", "?s": "satellite"} }, preconditions: [PosPred(PredicateSpec { name: "on_board", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"} } }), PosPred(PredicateSpec { name: "calibration_target", params: ParamSpec { symbol2type: {"?d": "direction", "?i": "instrument"} } }), PosPred(PredicateSpec { name: "pointing", params: ParamSpec { symbol2type: {"?d": "direction", "?s": "satellite"} } }), PosPred(PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"} } })], effects: [AddPred(PredicateSpec { name: "calibrated", params: ParamSpec { symbol2type: {"?i": "instrument"} } })] }, "switch_off": ActionSpec { name: "switch_off", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"} }, preconditions: [PosPred(PredicateSpec { name: "on_board", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"} } }), PosPred(PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"} } })], effects: [DelPred(PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"} } }), AddPred(PredicateSpec { name: "power_avail", params: ParamSpec { symbol2type: {"?s": "satellite"} } })] }, "switch_on": ActionSpec { name: "switch_on", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"} }, preconditions: [PosPred(PredicateSpec { name: "on_board", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"} } }), PosPred(PredicateSpec { name: "power_avail", params: ParamSpec { symbol2type: {"?s": "satellite"} } })], effects: [AddPred(PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"} } }), DelPred(PredicateSpec { name: "calibrated", params: ParamSpec { symbol2type: {"?i": "instrument"} } }), DelPred(PredicateSpec { name: "power_avail", params: ParamSpec { symbol2type: {"?s": "satellite"} } })] }, "take_image": ActionSpec { name: "take_image", params: ParamSpec { symbol2type: {"?d": "direction", "?i": "instrument", "?m": "mode", "?s": "satellite"} }, preconditions: [PosPred(PredicateSpec { name: "calibrated", params: ParamSpec { symbol2type: {"?i": "instrument"} } }), PosPred(PredicateSpec { name: "on_board", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"} } }), PosPred(PredicateSpec { name: "supports", params: ParamSpec { symbol2type: {"?i": "instrument", "?m": "mode"} } }), PosPred(PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"} } }), PosPred(PredicateSpec { name: "pointing", params: ParamSpec { symbol2type: {"?d": "direction", "?s": "satellite"} } }), PosPred(PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"} } }), Ge(PredicateSpec { name: "data_capacity", params: ParamSpec { symbol2type: {"?s": "satellite"} } }, PredicateSpec { name: "data", params: ParamSpec { symbol2type: {"?d": "direction", "?m": "mode"} } })], effects: [Decrease(PredicateSpec { name: "data_capacity", params: ParamSpec { symbol2type: {"?s": "satellite"} } }, PredicateSpec { name: "data", params: ParamSpec { symbol2type: {"?d": "direction", "?m": "mode"} } }), AddPred(PredicateSpec { name: "have_image", params: ParamSpec { symbol2type: {"?d": "direction", "?m": "mode"} } }), Increase(PredicateSpec { name: "data-stored", params: ParamSpec { symbol2type: {} } }, PredicateSpec { name: "data", params: ParamSpec { symbol2type: {"?d": "direction", "?m": "mode"} } })] }, "turn_to": ActionSpec { name: "turn_to", params: ParamSpec { symbol2type: {"?d_new": "direction", "?d_prev": "direction", "?s": "satellite"} }, preconditions: [PosPred(PredicateSpec { name: "pointing", params: ParamSpec { symbol2type: {"?d_prev": "direction", "?s": "satellite"} } }), Ne(PredicateSpec { name: "?d_new", params: ParamSpec { symbol2type: {} } }, PredicateSpec { name: "?d_prev", params: ParamSpec { symbol2type: {} } }), Ge(PredicateSpec { name: "fuel", params: ParamSpec { symbol2type: {"?s": "satellite"} } }, PredicateSpec { name: "slew_time", params: ParamSpec { symbol2type: {"?d_new": "direction", "?d_prev": "direction"} } })], effects: [AddPred(PredicateSpec { name: "pointing", params: ParamSpec { symbol2type: {"?d_new": "direction", "?s": "satellite"} } }), DelPred(PredicateSpec { name: "pointing", params: ParamSpec { symbol2type: {"?d_prev": "direction", "?s": "satellite"} } }), Decrease(PredicateSpec { name: "fuel", params: ParamSpec { symbol2type: {"?s": "satellite"} } }, PredicateSpec { name: "slew_time", params: ParamSpec { symbol2type: {"?d_new": "direction", "?d_prev": "direction"} } }), Increase(PredicateSpec { name: "fuel-used", params: ParamSpec { symbol2type: {} } }, PredicateSpec { name: "slew_time", params: ParamSpec { symbol2type: {"?d_new": "direction", "?d_prev": "direction"} } })] }} })"#);
+        let parsed = PddlDomainParser::parse(pddl).unwrap();
+        assert_eq!(format!("{:?}", parsed), r#"PddlDomain { name: "satellite", types: {"direction", "instrument", "mode", "satellite"}, predicates: {"calibrated": PredicateSpec { name: "calibrated", params: ParamSpec { symbol2type: {"?i": "instrument"}, param_list: ["?i"] } }, "calibration_target": PredicateSpec { name: "calibration_target", params: ParamSpec { symbol2type: {"?d": "direction", "?i": "instrument"}, param_list: ["?i", "?d"] } }, "have_image": PredicateSpec { name: "have_image", params: ParamSpec { symbol2type: {"?d": "direction", "?m": "mode"}, param_list: ["?d", "?m"] } }, "on_board": PredicateSpec { name: "on_board", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"}, param_list: ["?i", "?s"] } }, "pointing": PredicateSpec { name: "pointing", params: ParamSpec { symbol2type: {"?d": "direction", "?s": "satellite"}, param_list: ["?s", "?d"] } }, "power_avail": PredicateSpec { name: "power_avail", params: ParamSpec { symbol2type: {"?s": "satellite"}, param_list: ["?s"] } }, "power_on": PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"}, param_list: ["?i"] } }, "supports": PredicateSpec { name: "supports", params: ParamSpec { symbol2type: {"?i": "instrument", "?m": "mode"}, param_list: ["?i", "?m"] } }}, functions: {"data": PredicateSpec { name: "data", params: ParamSpec { symbol2type: {"?d": "direction", "?m": "mode"}, param_list: ["?d", "?m"] } }, "data-stored": PredicateSpec { name: "data-stored", params: ParamSpec { symbol2type: {}, param_list: [] } }, "data_capacity": PredicateSpec { name: "data_capacity", params: ParamSpec { symbol2type: {"?s": "satellite"}, param_list: ["?s"] } }, "fuel": PredicateSpec { name: "fuel", params: ParamSpec { symbol2type: {"?s": "satellite"}, param_list: ["?s"] } }, "fuel-used": PredicateSpec { name: "fuel-used", params: ParamSpec { symbol2type: {}, param_list: [] } }, "slew_time": PredicateSpec { name: "slew_time", params: ParamSpec { symbol2type: {"?a": "direction", "?b": "direction"}, param_list: ["?a", "?b"] } }}, actions: {"calibrate": ActionSpec { name: "calibrate", params: ParamSpec { symbol2type: {"?d": "direction", "?i": "instrument", "?s": "satellite"}, param_list: ["?s", "?i", "?d"] }, preconditions: [PosPred(PredicateSpec { name: "on_board", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"}, param_list: ["?i", "?s"] } }), PosPred(PredicateSpec { name: "calibration_target", params: ParamSpec { symbol2type: {"?d": "direction", "?i": "instrument"}, param_list: ["?i", "?d"] } }), PosPred(PredicateSpec { name: "pointing", params: ParamSpec { symbol2type: {"?d": "direction", "?s": "satellite"}, param_list: ["?s", "?d"] } }), PosPred(PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"}, param_list: ["?i"] } })], effects: [AddPred(PredicateSpec { name: "calibrated", params: ParamSpec { symbol2type: {"?i": "instrument"}, param_list: ["?i"] } })] }, "switch_off": ActionSpec { name: "switch_off", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"}, param_list: ["?i", "?s"] }, preconditions: [PosPred(PredicateSpec { name: "on_board", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"}, param_list: ["?i", "?s"] } }), PosPred(PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"}, param_list: ["?i"] } })], effects: [DelPred(PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"}, param_list: ["?i"] } }), AddPred(PredicateSpec { name: "power_avail", params: ParamSpec { symbol2type: {"?s": "satellite"}, param_list: ["?s"] } })] }, "switch_on": ActionSpec { name: "switch_on", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"}, param_list: ["?i", "?s"] }, preconditions: [PosPred(PredicateSpec { name: "on_board", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"}, param_list: ["?i", "?s"] } }), PosPred(PredicateSpec { name: "power_avail", params: ParamSpec { symbol2type: {"?s": "satellite"}, param_list: ["?s"] } })], effects: [AddPred(PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"}, param_list: ["?i"] } }), DelPred(PredicateSpec { name: "calibrated", params: ParamSpec { symbol2type: {"?i": "instrument"}, param_list: ["?i"] } }), DelPred(PredicateSpec { name: "power_avail", params: ParamSpec { symbol2type: {"?s": "satellite"}, param_list: ["?s"] } })] }, "take_image": ActionSpec { name: "take_image", params: ParamSpec { symbol2type: {"?d": "direction", "?i": "instrument", "?m": "mode", "?s": "satellite"}, param_list: ["?s", "?d", "?i", "?m"] }, preconditions: [PosPred(PredicateSpec { name: "calibrated", params: ParamSpec { symbol2type: {"?i": "instrument"}, param_list: ["?i"] } }), PosPred(PredicateSpec { name: "on_board", params: ParamSpec { symbol2type: {"?i": "instrument", "?s": "satellite"}, param_list: ["?i", "?s"] } }), PosPred(PredicateSpec { name: "supports", params: ParamSpec { symbol2type: {"?i": "instrument", "?m": "mode"}, param_list: ["?i", "?m"] } }), PosPred(PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"}, param_list: ["?i"] } }), PosPred(PredicateSpec { name: "pointing", params: ParamSpec { symbol2type: {"?d": "direction", "?s": "satellite"}, param_list: ["?s", "?d"] } }), PosPred(PredicateSpec { name: "power_on", params: ParamSpec { symbol2type: {"?i": "instrument"}, param_list: ["?i"] } }), Ge(PredicateSpec { name: "data_capacity", params: ParamSpec { symbol2type: {"?s": "satellite"}, param_list: ["?s"] } }, PredicateSpec { name: "data", params: ParamSpec { symbol2type: {"?d": "direction", "?m": "mode"}, param_list: ["?d", "?m"] } })], effects: [Decrease(PredicateSpec { name: "data_capacity", params: ParamSpec { symbol2type: {"?s": "satellite"}, param_list: ["?s"] } }, PredicateSpec { name: "data", params: ParamSpec { symbol2type: {"?d": "direction", "?m": "mode"}, param_list: ["?d", "?m"] } }), AddPred(PredicateSpec { name: "have_image", params: ParamSpec { symbol2type: {"?d": "direction", "?m": "mode"}, param_list: ["?d", "?m"] } }), Increase(PredicateSpec { name: "data-stored", params: ParamSpec { symbol2type: {}, param_list: [] } }, PredicateSpec { name: "data", params: ParamSpec { symbol2type: {"?d": "direction", "?m": "mode"}, param_list: ["?d", "?m"] } })] }, "turn_to": ActionSpec { name: "turn_to", params: ParamSpec { symbol2type: {"?d_new": "direction", "?d_prev": "direction", "?s": "satellite"}, param_list: ["?s", "?d_new", "?d_prev"] }, preconditions: [PosPred(PredicateSpec { name: "pointing", params: ParamSpec { symbol2type: {"?d_prev": "direction", "?s": "satellite"}, param_list: ["?s", "?d_prev"] } }), Ne(PredicateSpec { name: "?d_new", params: ParamSpec { symbol2type: {}, param_list: [] } }, PredicateSpec { name: "?d_prev", params: ParamSpec { symbol2type: {}, param_list: [] } }), Ge(PredicateSpec { name: "fuel", params: ParamSpec { symbol2type: {"?s": "satellite"}, param_list: ["?s"] } }, PredicateSpec { name: "slew_time", params: ParamSpec { symbol2type: {"?d_new": "direction", "?d_prev": "direction"}, param_list: ["?d_new", "?d_prev"] } })], effects: [AddPred(PredicateSpec { name: "pointing", params: ParamSpec { symbol2type: {"?d_new": "direction", "?s": "satellite"}, param_list: ["?s", "?d_new"] } }), DelPred(PredicateSpec { name: "pointing", params: ParamSpec { symbol2type: {"?d_prev": "direction", "?s": "satellite"}, param_list: ["?s", "?d_prev"] } }), Decrease(PredicateSpec { name: "fuel", params: ParamSpec { symbol2type: {"?s": "satellite"}, param_list: ["?s"] } }, PredicateSpec { name: "slew_time", params: ParamSpec { symbol2type: {"?d_new": "direction", "?d_prev": "direction"}, param_list: ["?d_new", "?d_prev"] } }), Increase(PredicateSpec { name: "fuel-used", params: ParamSpec { symbol2type: {}, param_list: [] } }, PredicateSpec { name: "slew_time", params: ParamSpec { symbol2type: {"?d_new": "direction", "?d_prev": "direction"}, param_list: ["?d_new", "?d_prev"] } })] }} }"#);
+        println!("{}", parsed.make_python_domain());
     }
 }
