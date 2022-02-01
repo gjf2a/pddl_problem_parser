@@ -5,6 +5,7 @@ use sexpr_parser::{errorize, Parser, SexprTree};
 use sexpr_parser::SexprTree::{Sym, Sub};
 use crate::Condition::{PosPred, NegPred, Ne, Lt, Gt, Le, Ge, Eq};
 use crate::Effect::{AddPred, DelPred, Increase, Decrease};
+use anyhop::{Atom,Operator};
 
 #[derive(Clone,Debug,Ord,PartialOrd, PartialEq,Eq)]
 pub struct Predicate {
@@ -564,6 +565,66 @@ impl PddlDomain {
         self.actions.insert(a.name.clone(), a);
     }
 }
+/*
+pub struct DomainEncoderDecoder {
+    obj2id: BTreeMap<String,usize>,
+    pred2id: BTreeMap<String,usize>,
+    func2id: BTreeMap<String,usize>,
+    act2id: BTreeMap<String,(usize,usize)>
+}
+
+impl DomainEncoderDecoder {
+    pub fn new(domain: &PddlDomain, problem: &PddlProblem) -> Self {
+        let mut result = DomainEncoderDecoder {obj2id: BTreeMap::new(), pred2id: BTreeMap::new(),
+            func2id: BTreeMap::new(), act2id: BTreeMap::new()};
+        for obj in &problem.obj2type {
+            result.obj2id.insert(obj.0.clone(), result.obj2id.len());
+        }
+        for pred in &domain.predicates {
+            result.pred2id.insert(pred.0.clone(), result.pred2id.len());
+        }
+        for func in &domain.functions {
+            result.func2id.insert(func.0.clone(), result.func2id.len());
+        }
+        for act in &domain.actions {
+            result.act2id.insert(act.0.clone(), result.act2id.len());
+        }
+        result
+    }
+}
+
+#[derive(Copy,Clone,Eq,PartialEq,Ord,PartialOrd)]
+pub enum EncPred {
+    OneArg(usize,usize),
+    TwoArgs(usize,usize,usize),
+    ThreeArgs(usize,usize,usize,usize),
+    FourArgs(usize,usize,usize,usize,usize),
+    FiveArgs(usize,usize,usize,usize,usize,usize)
+}
+
+pub struct EncodedState {
+    true_preds: BTreeSet<EncPred>,
+    func_values: BTreeMap<EncPred,I40F24>,
+    op_preconds: Vec,
+    op_effects: Vec
+}
+
+pub enum EncOp {
+    OneArg(usize,usize),
+    TwoArgs(usize,usize,usize),
+    ThreeArgs(usize,usize,usize,usize),
+    FourArgs(usize,usize,usize,usize,usize),
+    FiveArgs(usize,usize,usize,usize,usize,usize)
+}
+
+impl Operator for EncOp {
+    type S = EncodedState;
+
+    fn attempt_update(&self, state: &mut Self::S) -> bool {
+        unimplemented!()
+    }
+}
+*/
 
 #[cfg(test)]
 mod tests {
