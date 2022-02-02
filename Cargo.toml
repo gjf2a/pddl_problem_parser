@@ -9,3 +9,4 @@ edition = "2021"
 [dependencies]
 fixed = "1.0.0"
 sexpr_parser = {git = "https://github.com/gjf2a/sexpr_parser"}
+anyhop = {git = "https://github.com/gjf2a/anyhop"}
