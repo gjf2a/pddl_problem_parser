@@ -365,7 +365,7 @@ impl PredicateSpec {
     }
 
     pub fn make_python_symbol(&self) -> String {
-        let mut python_symbol = format!("state.{}", self.name);
+        let mut python_symbol = format!("state.{}", self.name.replace("-", "_"));
         for param in self.params.param_list.iter() {
             python_symbol.push_str(format!("[{}]", param).as_str());
         }
