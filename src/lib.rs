@@ -471,13 +471,13 @@ impl ActionSpec {
         }
     }
 
-    pub fn make_python_function(&self, type_table: &BTreeSet<String>) -> String {
+    pub fn make_python_function(&self) -> String {
         format!("def {}(state{}):\n    if {}:\n{}        return state\n",
-                self.name, self.params.python_param(), self.make_python_preconditions(type_table),
+                self.name, self.params.python_param(), self.make_python_preconditions(),
                 self.make_python_effects())
     }
 
-    fn make_python_preconditions(&self, type_table: &BTreeSet<String>) -> String {
+    fn make_python_preconditions(&self) -> String {
         if self.preconditions.is_empty() {
             String::from("True")
         } else {
@@ -636,17 +636,8 @@ impl PddlDomain {
 
     pub fn make_python_domain(&self) -> String {
         let mut result = String::new();
-        if !self.types.is_empty() {
-            result.push('{');
-            for type_name in self.types.iter() {
-                result.push_str(type_name.as_str());
-                result.push(',');
-            }
-            result.pop();
-            result.push_str("}\n\n");
-        }
         for action in self.actions.values() {
-            result.push_str(action.make_python_function(&self.types).as_str());
+            result.push_str(action.make_python_function().as_str());
             result.push('\n');
         }
         result.replace("?", "")
