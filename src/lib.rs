@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, BTreeMap};
+use std::fmt::Display;
 use std::io;
 use fixed::types::I40F24;
 use sexpr_parser::{errorize, Parser, SexprTree};
@@ -6,6 +7,10 @@ use sexpr_parser::SexprTree::{Sym, Sub};
 use crate::Condition::{PosPred, NegPred, Ne, Lt, Gt, Le, Ge, Eq};
 use crate::Effect::{AddPred, DelPred, Increase, Decrease};
 use anyhop::Atom;
+
+fn clean_python_name(s: &str) -> String {
+    s.replace("-", "_")
+}
 
 #[derive(Clone,Debug,Ord,PartialOrd, PartialEq,Eq)]
 pub struct Predicate {
@@ -33,12 +38,20 @@ impl Predicate {
         self.elements[i + 1].as_str()
     }
 
-    pub fn make_python_state(&self) -> String {
-        let mut result = format!("{}", self.get_tag().replace("-", "_"));
-        for arg in self.elements.iter().skip(1) {
-            result.push_str(format!("['{}']", arg).as_str());
+    pub fn make_python_dictionary_key(&self) -> String {
+        if self.num_args() == 1 {
+            format!("'{}'", self.get_arg(0))
+        } else {
+            let mut result = "(".to_string();
+            for param in self.elements.iter().skip(1) {
+                result.push('\'');
+                result.push_str(param.as_str());
+                result.push_str("',");
+            }
+            result.pop();
+            result.push(')');
+            result
         }
-        result
     }
 }
 
@@ -67,7 +80,7 @@ impl PddlProblem {
     }
 
     pub fn make_python_state(&self) -> String {
-        let name = format!("{}_state", self.name).replace("-", "_");
+        let name = clean_python_name(format!("{}_state", self.name).as_str());
         let mut result = format!("{} = State('{}')\n", name, name);
         Self::add_python_predicates_to(name.as_str(), &mut result, &self.bool_state);
         Self::add_python_values_to(name.as_str(), &mut result, &self.i40f24_state);
@@ -75,24 +88,45 @@ impl PddlProblem {
     }
 
     pub fn make_python_goals(&self) -> String {
-        let name = format!("{}_goals", self.name).replace("-", "_");
+        let name = clean_python_name(format!("{}_goals", self.name).as_str());
         let mut result = format!("{} = State('{}')\n", name, name);
         Self::add_python_predicates_to(name.as_str(), &mut result, &self.goals);
         result
     }
 
     fn add_python_predicates_to(name: &str, result: &mut String, preds: &BTreeSet<Predicate>) {
-        // TODO: Rewrite this to create a dictionary literal (if there are parameters) and a simple literal (if not)
-        for pred in preds.iter() {
-            result.push_str(format!("{}.{} = True\n", name, pred.make_python_state()).as_str());
+        let values = preds.iter().map(|p| (p.clone(), "True")).collect();
+        Self::add_python_values_to(name, result, &values);
+    }
+
+    fn add_python_values_to<V: Display>(name: &str, result: &mut String, values: &BTreeMap<Predicate,V>) {
+        let pred_groups = Self::all_predicate_groups_from(values.keys());
+        for (pred_family, group) in pred_groups.iter() {
+            if group.len() == 1 && group[0].num_args() == 0 {
+                let value = values.get(&group[0]).unwrap();
+                result.push_str(format!("{}.{} = {}\n", name, clean_python_name(group[0].get_tag()), value).as_str());
+            } else {
+                let mut dictionary = "{".to_string();
+                for variant in group.iter() {
+                    let value = values.get(variant).unwrap();
+                    dictionary.push_str(format!("{}:{},", variant.make_python_dictionary_key(), value).as_str());
+                }
+                dictionary.pop();
+                dictionary.push('}');
+                result.push_str(format!("{}.{} = {}\n", name, clean_python_name(pred_family.as_str()), dictionary).as_str());
+            }
         }
     }
 
-    fn add_python_values_to(name: &str, result: &mut String, values: &BTreeMap<Predicate,I40F24>) {
-        // TODO: Rewrite this to create a dictionary literal (if there are parameters) and a simple literal (if not)
-        for (pred, val) in values.iter() {
-            result.push_str(format!("{}.{} = {}\n", name, pred.make_python_state(), val).as_str());
+    fn all_predicate_groups_from<'a, I:Iterator<Item=&'a Predicate>>(preds: I) -> BTreeMap<String,Vec<Predicate>> {
+        let mut result = BTreeMap::new();
+        for pred in preds {
+            match result.get_mut(pred.get_tag()) {
+                None => {result.insert(pred.get_tag().to_string(), vec![pred.clone()]);}
+                Some(entry) => {entry.push(pred.clone());}
+            }
         }
+        result
     }
 }
 
@@ -402,7 +436,7 @@ impl PredicateSpec {
     }
 
     pub fn make_python_symbol(&self) -> String {
-        let mut python_symbol = format!("state.{}", self.name.replace("-", "_"));
+        let mut python_symbol = format!("state.{}", clean_python_name(self.name.as_str()));
         for param in self.params.param_list.iter() {
             python_symbol.push_str(format!("[{}]", param).as_str());
         }
@@ -510,7 +544,7 @@ impl ActionSpec {
 
     pub fn make_python_function(&self) -> String {
         format!("def {}(state{}):\n    if {}:\n{}        return state\n",
-                self.name.replace("-", "_"), self.params.python_param(), self.make_python_preconditions(),
+                clean_python_name(self.name.as_str()), self.params.python_param(), self.make_python_preconditions(),
                 self.make_python_effects())
     }
 
