@@ -600,10 +600,10 @@ impl ActionSpec {
         if self.preconditions.is_empty() {
             String::from("True")
         } else {
-            let mut result = self.preconditions[0].make_python_expression();
+            let mut result = self.preconditions[0].make_python_expression(self);
             for c in self.preconditions.iter().skip(1) {
                 result.push_str(" and ");
-                result.push_str(c.make_python_expression().as_str());
+                result.push_str(c.make_python_expression(self).as_str());
             }
             result
         }
@@ -671,16 +671,24 @@ impl Condition {
         }
     }
 
-    pub fn make_python_expression(&self) -> String {
+    pub fn make_python_expression(&self, action: &ActionSpec) -> String {
         match self {
             PosPred(s) => s.make_python_getter("False"),
             NegPred(s) => format!("not {}", s.make_python_getter("False")),
-            Eq(s1, s2) => format!("{} == {}", s1.make_python_symbol(), s2.make_python_symbol()),
-            Ne(s1, s2) => format!("{} != {}", s1.make_python_symbol(), s2.make_python_symbol()),
-            Lt(s1, s2) => format!("{} < {}", s1.make_python_symbol(), s2.make_python_symbol()),
-            Gt(s1, s2) => format!("{} > {}", s1.make_python_symbol(), s2.make_python_symbol()),
-            Le(s1, s2) => format!("{} <= {}", s1.make_python_symbol(), s2.make_python_symbol()),
-            Ge(s1, s2) => format!("{} >= {}", s1.make_python_symbol(), s2.make_python_symbol())
+            Eq(s1, s2) => format!("{} == {}", Self::param_filter(action, s1), Self::param_filter(action, s2)),
+            Ne(s1, s2) => format!("{} != {}", Self::param_filter(action, s1), Self::param_filter(action, s2)),
+            Lt(s1, s2) => format!("{} < {}",  Self::param_filter(action, s1), Self::param_filter(action, s2)),
+            Gt(s1, s2) => format!("{} > {}",  Self::param_filter(action, s1), Self::param_filter(action, s2)),
+            Le(s1, s2) => format!("{} <= {}", Self::param_filter(action, s1), Self::param_filter(action, s2)),
+            Ge(s1, s2) => format!("{} >= {}", Self::param_filter(action, s1), Self::param_filter(action, s2))
+        }
+    }
+
+    fn param_filter(action: &ActionSpec, p: &PredicateSpec) -> String {
+        if p.params.param_list.len() == 0 && action.params.param_list.contains(&p.name) {
+            p.name.clone()
+        } else {
+            p.make_python_symbol()
         }
     }
 }
