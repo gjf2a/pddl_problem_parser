@@ -453,6 +453,25 @@ impl PredicateSpec {
         self.params.propagate_types(symbols2types);
     }
 
+    pub fn make_python_getter(&self, if_not_present: &str) -> String {
+        let mut python_symbol = format!("state.{}", clean_python_name(self.name.as_str()));
+        match self.params.param_list.len() {
+            2..=usize::MAX => {
+                python_symbol.push_str(".get((");
+                for param in self.params.param_list.iter() {
+                    python_symbol.push_str(format!("{},", param).as_str());
+                }
+                python_symbol.pop();
+                python_symbol.push_str(format!("), {})", if_not_present).as_str());
+            }
+            1 => {
+                python_symbol.push_str(format!(".get({}, {})", self.params.param_list[0], if_not_present).as_str());
+            }
+            _ => {}
+        }
+        python_symbol
+    }
+
     pub fn make_python_symbol(&self) -> String {
         let mut python_symbol = format!("state.{}", clean_python_name(self.name.as_str()));
         match self.params.param_list.len() {
@@ -654,8 +673,8 @@ impl Condition {
 
     pub fn make_python_expression(&self) -> String {
         match self {
-            PosPred(s) => s.make_python_symbol(),
-            NegPred(s) => format!("not {}", s.make_python_symbol()),
+            PosPred(s) => s.make_python_getter("False"),
+            NegPred(s) => format!("not {}", s.make_python_getter("False")),
             Eq(s1, s2) => format!("{} == {}", s1.make_python_symbol(), s2.make_python_symbol()),
             Ne(s1, s2) => format!("{} != {}", s1.make_python_symbol(), s2.make_python_symbol()),
             Lt(s1, s2) => format!("{} < {}", s1.make_python_symbol(), s2.make_python_symbol()),
