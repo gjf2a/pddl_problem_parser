@@ -79,12 +79,23 @@ impl PddlProblem {
             i40f24_state: BTreeMap::new(), goals: BTreeSet::new(), metric: None}
     }
 
-    pub fn make_python_state(&self) -> String {
+    pub fn make_python_state(&self, domain: &PddlDomain) -> String {
         let name = clean_python_name(format!("{}_state", self.name).as_str());
         let mut result = format!("{} = State('{}')\n", name, name);
-        Self::add_python_predicates_to(name.as_str(), &mut result, &self.bool_state);
-        Self::add_python_values_to(name.as_str(), &mut result, &self.i40f24_state);
+        let preds_used = Self::add_python_predicates_to(name.as_str(), &mut result, &self.bool_state);
+        Self::add_defaults(&mut result, name.as_str(), domain, &preds_used, &domain.predicates, "False");
+        let funcs_used = Self::add_python_values_to(name.as_str(), &mut result, &self.i40f24_state);
+        Self::add_defaults(&mut result, name.as_str(), domain, &funcs_used, &domain.functions, "0");
         result
+    }
+
+    fn add_defaults(result: &mut String, obj_name: &str, domain: &PddlDomain, names_used: &BTreeSet<String>, all: &BTreeMap<String,PredicateSpec>, default_value: &str) {
+        for pred in all.values() {
+            if !names_used.contains(pred.name.as_str()) {
+                let value = if domain.num_params_for(pred.name.as_str()).unwrap() > 0 {"{}"} else {default_value};
+                Self::add_state_assignment(result, obj_name, pred.name.as_str(), value);
+            }
+        }
     }
 
     pub fn make_python_goals(&self) -> String {
@@ -94,17 +105,19 @@ impl PddlProblem {
         result
     }
 
-    fn add_python_predicates_to(name: &str, result: &mut String, preds: &BTreeSet<Predicate>) {
+    fn add_python_predicates_to(name: &str, result: &mut String, preds: &BTreeSet<Predicate>) -> BTreeSet<String> {
         let values = preds.iter().map(|p| (p.clone(), "True")).collect();
-        Self::add_python_values_to(name, result, &values);
+        Self::add_python_values_to(name, result, &values)
     }
 
-    fn add_python_values_to<V: Display>(name: &str, result: &mut String, values: &BTreeMap<Predicate,V>) {
+    fn add_python_values_to<V: Display>(name: &str, result: &mut String, values: &BTreeMap<Predicate,V>) -> BTreeSet<String> {
+        let mut names_used = BTreeSet::new();
         let pred_groups = Self::all_predicate_groups_from(values.keys());
         for (pred_family, group) in pred_groups.iter() {
+            names_used.insert(pred_family.clone());
             if group.len() == 1 && group[0].num_args() == 0 {
                 let value = values.get(&group[0]).unwrap();
-                result.push_str(format!("{}.{} = {}\n", name, clean_python_name(group[0].get_tag()), value).as_str());
+                Self::add_state_assignment(result, name, group[0].get_tag(), value);
             } else {
                 let mut dictionary = "{".to_string();
                 for variant in group.iter() {
@@ -113,9 +126,14 @@ impl PddlProblem {
                 }
                 dictionary.pop();
                 dictionary.push('}');
-                result.push_str(format!("{}.{} = {}\n", name, clean_python_name(pred_family.as_str()), dictionary).as_str());
+                Self::add_state_assignment(result, name, pred_family.as_str(), dictionary.as_str());
             }
         }
+        names_used
+    }
+
+    fn add_state_assignment<V: Display>(target: &mut String, obj_name: &str, field_name: &str, value: V) {
+        target.push_str(format!("{}.{} = {}\n", obj_name, clean_python_name(field_name), value).as_str());
     }
 
     fn all_predicate_groups_from<'a, I:Iterator<Item=&'a Predicate>>(preds: I) -> BTreeMap<String,Vec<Predicate>> {
@@ -437,8 +455,19 @@ impl PredicateSpec {
 
     pub fn make_python_symbol(&self) -> String {
         let mut python_symbol = format!("state.{}", clean_python_name(self.name.as_str()));
-        for param in self.params.param_list.iter() {
-            python_symbol.push_str(format!("[{}]", param).as_str());
+        match self.params.param_list.len() {
+            2..=usize::MAX => {
+                python_symbol.push_str("[(");
+                for param in self.params.param_list.iter() {
+                    python_symbol.push_str(format!("{},", param).as_str());
+                }
+                python_symbol.pop();
+                python_symbol.push_str(")]");
+            }
+            1 => {
+                python_symbol.push_str(format!("[{}]", self.params.param_list[0]).as_str());
+            }
+            _ => {}
         }
         python_symbol
     }
@@ -689,6 +718,16 @@ impl PddlDomain {
             functions: BTreeMap::new(), actions: BTreeMap::new()}
     }
 
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    pub fn num_params_for(&self, predicate_name: &str) -> Option<usize> {
+        self.predicates.get(predicate_name)
+            .or(self.functions.get(predicate_name))
+            .map(|p| p.params.param_list.len())
+    }
+
     pub fn add_type(&mut self, t: String) {
         self.types.insert(t);
     }
@@ -709,7 +748,7 @@ impl PddlDomain {
         let mut result = String::new();
         for action in self.actions.values() {
             result.push_str(action.make_python_function().as_str());
-            result.push('\n');
+            result.push_str("\n\n");
         }
         result.replace("?", "")
     }
@@ -788,8 +827,6 @@ mod tests {
 (:goal (on a b)))";
         let parsed = PddlParser::parse(pddl).unwrap();
         assert_eq!(format!("{:?}", parsed), r#"PddlProblem { name: "blocks-2-0", domain: "blocks", obj2type: {"a": "untyped", "b": "untyped"}, bool_state: {Predicate { elements: ["clear", "a"] }, Predicate { elements: ["clear", "b"] }, Predicate { elements: ["handempty"] }, Predicate { elements: ["ontable", "a"] }, Predicate { elements: ["ontable", "b"] }}, i40f24_state: {}, goals: {Predicate { elements: ["on", "a", "b"] }}, metric: None }"#);
-        println!("{}", parsed.make_python_state());
-        println!("{}", parsed.make_python_goals());
     }
 
     #[test]
@@ -803,8 +840,6 @@ mod tests {
 )";
         let parsed = PddlParser::parse(pddl).unwrap();
         assert_eq!(format!("{:?}", parsed), r#"PddlProblem { name: "blocks-4-2", domain: "blocks", obj2type: {"a": "untyped", "b": "untyped", "c": "untyped", "d": "untyped"}, bool_state: {Predicate { elements: ["clear", "a"] }, Predicate { elements: ["clear", "c"] }, Predicate { elements: ["clear", "d"] }, Predicate { elements: ["handempty"] }, Predicate { elements: ["on", "c", "b"] }, Predicate { elements: ["ontable", "a"] }, Predicate { elements: ["ontable", "b"] }, Predicate { elements: ["ontable", "d"] }}, i40f24_state: {}, goals: {Predicate { elements: ["on", "a", "b"] }, Predicate { elements: ["on", "b", "c"] }, Predicate { elements: ["on", "c", "d"] }}, metric: None }"#);
-        println!("{}", parsed.make_python_state());
-        println!("{}", parsed.make_python_goals());
     }
 
     #[test]
@@ -900,8 +935,6 @@ mod tests {
 )";
         let parsed = PddlParser::parse(pddl).unwrap();
         assert_eq!(format!("{:?}", parsed), r#"PddlProblem { name: "strips-sat-x-1", domain: "satellite", obj2type: {"groundstation1": "direction", "groundstation2": "direction", "image1": "mode", "instrument0": "instrument", "phenomenon3": "direction", "phenomenon4": "direction", "phenomenon6": "direction", "satellite0": "satellite", "spectrograph2": "mode", "star0": "direction", "star5": "direction", "thermograph0": "mode"}, bool_state: {Predicate { elements: ["calibration_target", "instrument0", "groundstation2"] }, Predicate { elements: ["on_board", "instrument0", "satellite0"] }, Predicate { elements: ["pointing", "satellite0", "phenomenon6"] }, Predicate { elements: ["power_avail", "satellite0"] }, Predicate { elements: ["supports", "instrument0", "thermograph0"] }}, i40f24_state: {Predicate { elements: ["data", "phenomenon3", "image1"] }: 22, Predicate { elements: ["data", "phenomenon3", "spectrograph2"] }: 125, Predicate { elements: ["data", "phenomenon3", "thermograph0"] }: 136, Predicate { elements: ["data", "phenomenon4", "image1"] }: 120, Predicate { elements: ["data", "phenomenon4", "spectrograph2"] }: 196, Predicate { elements: ["data", "phenomenon4", "thermograph0"] }: 134, Predicate { elements: ["data", "phenomenon6", "image1"] }: 144, Predicate { elements: ["data", "phenomenon6", "spectrograph2"] }: 174, Predicate { elements: ["data", "phenomenon6", "thermograph0"] }: 219, Predicate { elements: ["data", "star5", "image1"] }: 203, Predicate { elements: ["data", "star5", "spectrograph2"] }: 68, Predicate { elements: ["data", "star5", "thermograph0"] }: 273, Predicate { elements: ["data-stored"] }: 0, Predicate { elements: ["data_capacity", "satellite0"] }: 1000, Predicate { elements: ["fuel", "satellite0"] }: 112, Predicate { elements: ["fuel-used"] }: 0, Predicate { elements: ["slew_time", "groundstation1", "groundstation2"] }: 68.04, Predicate { elements: ["slew_time", "groundstation1", "phenomenon3"] }: 89.48, Predicate { elements: ["slew_time", "groundstation1", "phenomenon4"] }: 31.79, Predicate { elements: ["slew_time", "groundstation1", "phenomenon6"] }: 17.63, Predicate { elements: ["slew_time", "groundstation1", "star0"] }: 18.17, Predicate { elements: ["slew_time", "groundstation1", "star5"] }: 8.59, Predicate { elements: ["slew_time", "groundstation2", "groundstation1"] }: 68.04, Predicate { elements: ["slew_time", "groundstation2", "phenomenon3"] }: 33.94, Predicate { elements: ["slew_time", "groundstation2", "phenomenon4"] }: 39.73, Predicate { elements: ["slew_time", "groundstation2", "phenomenon6"] }: 50.73, Predicate { elements: ["slew_time", "groundstation2", "star0"] }: 38.61, Predicate { elements: ["slew_time", "groundstation2", "star5"] }: 62.86, Predicate { elements: ["slew_time", "phenomenon3", "groundstation1"] }: 89.48, Predicate { elements: ["slew_time", "phenomenon3", "groundstation2"] }: 33.94, Predicate { elements: ["slew_time", "phenomenon3", "phenomenon4"] }: 25.72, Predicate { elements: ["slew_time", "phenomenon3", "phenomenon6"] }: 14.75, Predicate { elements: ["slew_time", "phenomenon3", "star0"] }: 14.29, Predicate { elements: ["slew_time", "phenomenon3", "star5"] }: 10.18, Predicate { elements: ["slew_time", "phenomenon4", "groundstation1"] }: 31.79, Predicate { elements: ["slew_time", "phenomenon4", "groundstation2"] }: 39.73, Predicate { elements: ["slew_time", "phenomenon4", "phenomenon3"] }: 25.72, Predicate { elements: ["slew_time", "phenomenon4", "phenomenon6"] }: 2.098, Predicate { elements: ["slew_time", "phenomenon4", "star0"] }: 35.01, Predicate { elements: ["slew_time", "phenomenon4", "star5"] }: 64.5, Predicate { elements: ["slew_time", "phenomenon6", "groundstation1"] }: 17.63, Predicate { elements: ["slew_time", "phenomenon6", "groundstation2"] }: 50.73, Predicate { elements: ["slew_time", "phenomenon6", "phenomenon3"] }: 14.75, Predicate { elements: ["slew_time", "phenomenon6", "phenomenon4"] }: 2.098, Predicate { elements: ["slew_time", "phenomenon6", "star0"] }: 77.07, Predicate { elements: ["slew_time", "phenomenon6", "star5"] }: 29.32, Predicate { elements: ["slew_time", "star0", "groundstation1"] }: 18.17, Predicate { elements: ["slew_time", "star0", "groundstation2"] }: 38.61, Predicate { elements: ["slew_time", "star0", "phenomenon3"] }: 14.29, Predicate { elements: ["slew_time", "star0", "phenomenon4"] }: 35.01, Predicate { elements: ["slew_time", "star0", "phenomenon6"] }: 77.07, Predicate { elements: ["slew_time", "star0", "star5"] }: 36.56, Predicate { elements: ["slew_time", "star5", "groundstation1"] }: 8.59, Predicate { elements: ["slew_time", "star5", "groundstation2"] }: 62.86, Predicate { elements: ["slew_time", "star5", "phenomenon3"] }: 10.18, Predicate { elements: ["slew_time", "star5", "phenomenon4"] }: 64.5, Predicate { elements: ["slew_time", "star5", "phenomenon6"] }: 29.32, Predicate { elements: ["slew_time", "star5", "star0"] }: 36.56}, goals: {Predicate { elements: ["have_image", "phenomenon4", "thermograph0"] }, Predicate { elements: ["have_image", "phenomenon6", "thermograph0"] }, Predicate { elements: ["have_image", "star5", "thermograph0"] }}, metric: Some(Minimize(Predicate { elements: ["fuel-used"] })) }"#);
-        println!("{}", parsed.make_python_state());
-        println!("{}", parsed.make_python_goals());
     }
 
     #[test]
