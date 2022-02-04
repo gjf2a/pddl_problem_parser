@@ -27,7 +27,7 @@ fn main() -> io::Result<()> {
 
         for (i, problem) in problems.iter().enumerate() {
             let prob = PddlParser::parse(problem.as_str())?;
-            let problem_filename = format!("{}_{}.py", prob.name, i);
+            let problem_filename = format!("{}_{}.py", prob.name.replace("-", "_"), i);
             println!("Processing {}", problem_filename);
             write(problem_filename.as_str(), format!("from pyhop_anytime import *\n\n{}\n{}\n", prob.make_python_state(&domain), prob.make_python_goals()))?;
         }
