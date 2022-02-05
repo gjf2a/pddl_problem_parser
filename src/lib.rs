@@ -453,40 +453,56 @@ impl PredicateSpec {
         self.params.propagate_types(symbols2types);
     }
 
-    pub fn make_python_getter(&self, if_not_present: &str) -> String {
-        let mut python_symbol = format!("state.{}", clean_python_name(self.name.as_str()));
+    fn container_symbol(&self) -> String {
+        format!("state.{}", clean_python_name(self.name.as_str()))
+    }
+
+    fn symbol_index(&self) -> String {
         match self.params.param_list.len() {
             2..=usize::MAX => {
-                python_symbol.push_str(".get((");
+                let mut result = String::from("(");
                 for param in self.params.param_list.iter() {
-                    python_symbol.push_str(format!("{},", param).as_str());
+                    result.push_str(format!("{},", param).as_str());
                 }
-                python_symbol.pop();
-                python_symbol.push_str(format!("), {})", if_not_present).as_str());
+                result.pop();
+                result.push(')');
+                result
             }
-            1 => {
-                python_symbol.push_str(format!(".get({}, {})", self.params.param_list[0], if_not_present).as_str());
-            }
-            _ => {}
+            1 => self.params.param_list[0].clone(),
+            _ => String::new()
         }
-        python_symbol
+    }
+
+    pub fn make_python_checker(&self) -> String {
+        if self.params.param_list.len() > 0 {
+            format!("{} in {}", self.symbol_index(), self.container_symbol())
+        } else {
+            self.container_symbol().clone()
+        }
+    }
+
+    pub fn make_python_adder(&self) -> String {
+        if self.params.param_list.len() > 0 {
+            format!("{}.add({})", self.container_symbol(), self.symbol_index())
+        } else {
+            format!("{} = True", self.container_symbol())
+        }
+    }
+
+    pub fn make_python_deleter(&self) -> String {
+        if self.params.param_list.len() > 0 {
+            format!("{}.remove({})", self.container_symbol(), self.symbol_index())
+        } else {
+            format!("{} = False", self.container_symbol())
+        }
     }
 
     pub fn make_python_symbol(&self) -> String {
         let mut python_symbol = format!("state.{}", clean_python_name(self.name.as_str()));
-        match self.params.param_list.len() {
-            2..=usize::MAX => {
-                python_symbol.push_str("[(");
-                for param in self.params.param_list.iter() {
-                    python_symbol.push_str(format!("{},", param).as_str());
-                }
-                python_symbol.pop();
-                python_symbol.push_str(")]");
-            }
-            1 => {
-                python_symbol.push_str(format!("[{}]", self.params.param_list[0]).as_str());
-            }
-            _ => {}
+        if self.params.param_list.len() > 0 {
+            python_symbol.push('[');
+            python_symbol.push_str(self.symbol_index().as_str());
+            python_symbol.push(']');
         }
         python_symbol
     }
@@ -673,8 +689,8 @@ impl Condition {
 
     pub fn make_python_expression(&self, action: &ActionSpec) -> String {
         match self {
-            PosPred(s) => s.make_python_getter("False"),
-            NegPred(s) => format!("not {}", s.make_python_getter("False")),
+            PosPred(s) => s.make_python_checker(),
+            NegPred(s) => format!("not {}", s.make_python_checker()),
             Eq(s1, s2) => format!("{} == {}", Self::param_filter(action, s1), Self::param_filter(action, s2)),
             Ne(s1, s2) => format!("{} != {}", Self::param_filter(action, s1), Self::param_filter(action, s2)),
             Lt(s1, s2) => format!("{} < {}",  Self::param_filter(action, s1), Self::param_filter(action, s2)),
@@ -722,8 +738,8 @@ impl Effect {
 
     pub fn make_python_effect(&self) -> String {
         match self {
-            AddPred(s) => format!("{} = True", s.make_python_symbol()),
-            DelPred(s) => format!("{} = False", s.make_python_symbol()),
+            AddPred(s) => s.make_python_adder(),
+            DelPred(s) => s.make_python_deleter(),
             Increase(s1, s2) => format!("{} += {}", s1.make_python_symbol(), s2.make_python_symbol()),
             Decrease(s1, s2) => format!("{} -= {}", s1.make_python_symbol(), s2.make_python_symbol())
         }
